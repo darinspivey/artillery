@@ -74,8 +74,10 @@ class CustomerSocket {
           this.connectSocket(context, callback)
         }
       ], (err) => {
-        if (err) return cb(err)
-
+        if (err) {
+          ee.emit('error', `Initialize ${err}`)
+          return cb(err, context)
+        }
         async.parallel([
           (callback) => {
             this.listenFor({
@@ -98,12 +100,13 @@ class CustomerSocket {
           }
         ], (err) => {
           this.disconnectSocket(context)
-          ee.emit('done')
           if (err) {
-            debug('Error in initialize', err)
-            return cb(err)
+            ee.emit('error', err)
+            debug('Error in flow', err)
+            return cb(err, context)
           }
-          cb()
+          ee.emit('done')
+          cb(null, context)
         })
       })
     }
@@ -168,6 +171,7 @@ class CustomerSocket {
 
           if (err) {
             code = `${event_name} (FAIL)`
+            ee.emit('error', code)
             debug('Matching error', err)
             callback(err)
           } else {
@@ -293,10 +297,10 @@ class CustomerSocket {
     })
     context._pendingRequests += tasks.length
 
-    async.each(tasks, (httpFn, callback) => {
+    async.eachSeries(tasks, (httpFn, callback) => {
       httpFn(context, (err) => {
         context._pendingRequests--
-        callback(err)
+        setImmediate(callback, err)
       })
     }, cb)
   }
