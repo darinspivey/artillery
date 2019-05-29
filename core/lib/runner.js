@@ -378,6 +378,10 @@ function runScenario(script, intermediate, runState, ee) {
       // Bubble up custom events from a scenario's processor function(s)
       ee.emit('custom', payload);
     })
+    runState.scenarioEvents.on('reset_stats', function() {
+      // For websocket work, we may not want HTTP latencies to clutter
+      intermediate.reset();
+    })
     runState.compiledScenarios = _.map(
         script.scenarios,
         function(scenarioSpec) {

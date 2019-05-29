@@ -1,13 +1,16 @@
 'use strict'
 
 const {EventEmitter} = require('events')
-const async = require('async');
-const debug = require('debug')('customer-socket');
-const engineUtil = require('./engine_util');
-const EngineHttp = require('./engine_http');
-const io = require('socket.io-client');
-const request = require('request');
-const template = engineUtil.template;
+const async = require('async')
+const debug = require('debug')
+const error = debug('customer-socket:error')
+const info = debug('customer-socket:info')
+const verbose = debug('customer-socket:verbose')
+const engineUtil = require('./engine_util')
+const EngineHttp = require('./engine_http')
+const io = require('socket.io-client')
+const request = require('request')
+const template = engineUtil.template
 
 class CustomerSocket {
   constructor(script, ee, helpers) {
@@ -32,12 +35,15 @@ class CustomerSocket {
       context.socket = socket
 
       socket.once('connect', function() {
+        verbose('Socket connected!')
         cb()
       });
       socket.once('connect_error', function(err) {
+        verbose('CONNECT ERROR:', err)
         cb(err)
       });
       socket.once('error', function(err) {
+        verbose('SOCKET ERROR:', err)
         cb(err)
       })
     }
@@ -56,6 +62,14 @@ class CustomerSocket {
       context._pendingRequests = 0
       const _flow_ee = new EventEmitter()
 
+      // 1. Run The 'initialize' section sequentially. Load context vars, etc.
+      // 2. Make sure we have an `authorization`
+      // 3. Create/connect the socket
+      // 4. Bind listeners.  These will WAIT for socket data and thus cannot
+      //    callback immediately.  Do them asynchronously and use an EE for
+      //    signaling back to the main loop.
+      // 5. Run 'flow', which can contain HTTP calls that generate WS messages
+
       async.series([
         (callback) => {
           this.runHttpDelegates({
@@ -73,6 +87,11 @@ class CustomerSocket {
       , (callback) => {
           this.connectSocket(context, callback)
         }
+      , (callback) => {
+          // Nuke any latencies from HTTP calls
+          ee.emit('reset')
+          callback()
+        }
       ], (err) => {
         if (err) {
           ee.emit('error', `Initialize ${err}`)
@@ -80,11 +99,16 @@ class CustomerSocket {
         }
         async.parallel([
           (callback) => {
+            const event_timeout = this.script.config.socketio
+              ? this.script.config.socketio.event_timeout
+              : undefined
+
             this.listenFor({
               listen_for: scenario.listen_for
             , context
             , ee
             , _flow_ee
+            , event_timeout
             }, callback)
           }
         , (callback) => {
@@ -102,7 +126,7 @@ class CustomerSocket {
           this.disconnectSocket(context)
           if (err) {
             ee.emit('error', err)
-            debug('Error in flow', err)
+            error('Error in flow', err)
             return cb(err, context)
           }
           ee.emit('done')
@@ -128,15 +152,18 @@ class CustomerSocket {
     , context
     , ee
     , _flow_ee
+    , event_timeout
     } = opts
 
     if (!listen_for || !Array.isArray(listen_for)) {
-      debug('Warning: no "listen_for" configured. Will not receive.')
+      info('Warning: no "listen_for" configured. Will not receive.')
       setImmediate(() => {
         _flow_ee.emit('listenFor:done')
       })
       return cb()
     }
+
+    const socket = context.socket
 
     // This is the tricky part.  We need the listeners bound first, and
     // the whole thing can't call back until they've success/failed.
@@ -147,52 +174,103 @@ class CustomerSocket {
       const {
         event_name
       , match
+      , capture
+      , count = 1
       } = item
 
       if (!event_name) {
         return cb('Cannot use \'listen_for\' without an event_name')
       }
 
-      debug(`listen_for event name: ${event_name} (${context.vars.user_id})`)
+      verbose(`listen_for event name: ${event_name} (${context.vars.user_id})`)
 
-      const startedAt = process.hrtime()
+      let startedAt = process.hrtime()
+      let timer = null
 
-      // Add things here like `capture` or `data` (exact matching)
+      // Add other things here like `data` (exact matching)
       const validations = {
-        match: template(match, context)
+        capture: template(capture, context)
+      , match: template(match, context)
       }
 
-      const socket = context.socket
+      let receive_count = 0
+
+      // Timeout can be disabled by setting timer to -1.  Allows for
+      // continuous messages (via message count) to be received
+      const setTimer = () => {
+        // If we don't get a response within the timeout, fire an error
+        if (timer) {
+          clearTimeout(timer)
+        }
+        const wait_time = !event_timeout
+          ? 10
+          : event_timeout
+
+        if (wait_time < 0) {
+          verbose('warning: event_timeout has been disabled!')
+          return
+        } else {
+          verbose(`Event timeout is: ${event_timeout}`)
+        }
+        if (receive_count >= count) {
+          verbose(`Complete. ${receive_count} of ${count} events received.`)
+          return
+        }
+        return setTimeout(function responseTimeout() {
+          let err = `Time out waiting for response match for: ${event_name}`
+          ee.emit('error', err)
+          return done(err)
+        }, wait_time * 1000)
+      }
 
       const receiveEvent = (content) => {
         this.processResponse({ee, content, validations, context}, (err) => {
-          clearTimeout(timer)
+          receive_count++
+          if (timer) {
+            timer = setTimer()
+          }
           let code = `${event_name} (matched)`
 
           if (err) {
             code = `${event_name} (FAIL)`
             ee.emit('error', code)
-            debug('Matching error', err)
-            callback(err)
+            error('Matching error', err)
+            done(err)
           } else {
-            debug(`MATCH!  event_name: ${event_name} (${context.vars.user_id})`)
-            callback()
+            verbose(`MATCH!  event_name: ${event_name} (${context.vars.user_id})`)
+            if (receive_count >= count) {
+              done()
+            }
+          }
+          // If we've captured a field to use for latency calculation, use it
+          // instead of the start time of this listener.
+          if (context.vars.__calculate_latency) {
+            const pub_date = new Date(context.vars.__calculate_latency)
+            if (pub_date instanceof Date && !isNaN(pub_date)) {
+              const now = new Date()
+              // There will be clock drift here, but at least it tells us
+              // when things get SLOW, on the order of seconds
+              let delta = (now - pub_date) * 1e6
+              if (delta < 0) {
+                // Don't let negatives (clock drift) skew the latency report
+                delta = 0
+              }
+              ee.emit('response', delta, code, context._uid)
+              return
+            }
           }
           this.markEndTime(ee, context, code, startedAt)
         })
       }
 
-      // If we don't get a response within the timeout, fire an error
-      let wait_time = this.script.config.timeout || 10
-
-      const timer = setTimeout(function responseTimeout() {
+      function done(err) {
         socket.off(event_name, receiveEvent)
-        let err = `Time out waiting for response match for: ${event_name}`
-        ee.emit('error', err)
-        return callback(err)
-      }, wait_time * 1000)
+        callback(err)
+      }
 
-      socket.once(event_name, receiveEvent)
+      timer = setTimer()
+
+      socket.on(event_name, receiveEvent)
     }, cb)
 
     // Signal back that the listeners have been set up so we can resume HTTP
@@ -216,7 +294,7 @@ class CustomerSocket {
     } = opts
 
     // If no capture or match specified, then we consider it a success at this point...
-    if (!validations.match) {
+    if (!validations || !Object.keys(validations).length) {
       return cb()
     }
 
@@ -289,7 +367,7 @@ class CustomerSocket {
     // Receives a list of HTTP actions (from initialize or flow)
     if (!actions || !actions.length) return cb()
     if (!Array.isArray(actions)) {
-      debug(`Section of ${section} actions expects an array.`, actions)
+      error(`Section of ${section} actions expects an array.`, actions)
       throw new TypeError(`${section} actions are invalid`)
     }
     const tasks = actions.map((task) => {
