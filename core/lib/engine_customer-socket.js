@@ -21,32 +21,48 @@ class CustomerSocket {
     this.httpDelegate = new EngineHttp(script)
   }
 
-  connectSocket(context, cb) {
-    if(!context.socket) {
-      const target = this.script.config.target
-      const socket_opts = Object.assign({}, this.script.config.socketio)
-      if (!socket_opts.extraHeaders) {
-        socket_opts.extraHeaders = {}
-      }
-      // Each user has a different auth. Inject it.
-      socket_opts.extraHeaders.authorization = context.vars.authorization
+  connectSocket(context, _flow_ee, cb) {
+    if (context.socket) return cb()
 
-      const socket = io(target, socket_opts)
-      context.socket = socket
-
-      socket.once('connect', function() {
-        verbose('Socket connected!')
-        cb()
-      });
-      socket.once('connect_error', function(err) {
-        verbose('CONNECT ERROR:', err)
-        cb(err)
-      });
-      socket.once('error', function(err) {
-        verbose('SOCKET ERROR:', err)
-        cb(err)
-      })
+    const target = this.script.config.target
+    const socket_opts = Object.assign({}, this.script.config.socketio)
+    if (!socket_opts.extraHeaders) {
+      socket_opts.extraHeaders = {}
     }
+    // Each user has a different auth. Inject it.
+    socket_opts.extraHeaders.authorization = context.vars.authorization
+
+    const socket = io(target, socket_opts)
+    context.socket = socket
+
+    let called_back = false
+
+    // Make sure we only callback once, especially when an error happens
+    const done = (err) => {
+      if (called_back) {
+        if (err) {
+          // We can't call back, but we can still report the error and cleanup
+          // by telling our event_name listeners to stop/error.
+          _flow_ee.emit('abort', err)
+        }
+        return
+      }
+      called_back = true
+      cb(err)
+    }
+
+    socket.once('connect', function() {
+      verbose('Socket connected!')
+      done()
+    });
+    socket.once('connect_error', function(err) {
+      verbose('CONNECT ERROR:', err)
+      done(err)
+    });
+    socket.once('error', function(err) {
+      verbose('SOCKET ERROR:', err)
+      done(err)
+    })
   }
 
   createScenario(scenario, ee) {
@@ -85,7 +101,7 @@ class CustomerSocket {
           callback()
         }
       , (callback) => {
-          this.connectSocket(context, callback)
+          this.connectSocket(context, _flow_ee, callback)
         }
       , (callback) => {
           // Nuke any latencies from HTTP calls
@@ -271,6 +287,11 @@ class CustomerSocket {
       })
 
       timer = setTimer()
+
+      // Listen for socket errors.  Return so the test doesn't hang.
+      _flow_ee.once('abort', (err) => {
+        _flow_ee.emit(`done:${event_name}`, err)
+      })
 
       socket.on(event_name, receiveEvent)
     }, cb)
