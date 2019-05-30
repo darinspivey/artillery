@@ -219,7 +219,7 @@ class CustomerSocket {
         return setTimeout(function responseTimeout() {
           let err = `Time out waiting for response match for: ${event_name}`
           ee.emit('error', err)
-          return done(err)
+          _flow_ee.emit(`done:${event_name}`, err)
         }, wait_time * 1000)
       }
 
@@ -235,11 +235,11 @@ class CustomerSocket {
             code = `${event_name} (FAIL)`
             ee.emit('error', code)
             error('Matching error', err)
-            done(err)
+            _flow_ee.emit(`done:${event_name}`, err)
           } else {
             verbose(`MATCH!  event_name: ${event_name} (${context.vars.user_id})`)
             if (receive_count >= count) {
-              done()
+              _flow_ee.emit(`done:${event_name}`)
             }
           }
           // If we've captured a field to use for latency calculation, use it
@@ -263,10 +263,12 @@ class CustomerSocket {
         })
       }
 
-      function done(err) {
+      // Use our EE here to ensure callback is only called once.  There could
+      // be a race condition with error/success vs. timeout.
+      _flow_ee.once(`done:${event_name}`, (err) => {
         socket.off(event_name, receiveEvent)
         callback(err)
-      }
+      })
 
       timer = setTimer()
 
