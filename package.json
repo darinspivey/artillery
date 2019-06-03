@@ -54,6 +54,7 @@
     "driftless": "^2.0.3",
     "esprima": "^4.0.0",
     "filtrex": "^0.5.4",
+    "graphql": "^14.3.1",
     "js-yaml": "^3.13.1",
     "jsck": "^0.3.2",
     "jsonpath": "^1.0.1",
