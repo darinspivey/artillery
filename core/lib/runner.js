@@ -23,7 +23,8 @@ const Engines = {
   http: {},
   ws: {},
   socketio: {},
-  'customer-socket': {}
+  'customer-socket': {},
+  'graphql-subscriptions': {}
 };
 
 JSCK.Draft4 = JSCK.draft4;
