@@ -163,6 +163,16 @@ class CustomerSocket {
 
     const subscription_client = context.subscription_client
 
+    const wait_time = !event_timeout
+      ? 10
+      : event_timeout
+
+    if (wait_time < 0) {
+      verbose('warning: event_timeout has been disabled!')
+      return
+    } else {
+      verbose(`Event timeout is: ${event_timeout}`)
+    }
     // This is the tricky part.  We need the subscriptions made first, and
     // the whole thing can't call back until they've success/failed.
     // Use an EventEmitter to signal that they are ready, while
@@ -208,16 +218,6 @@ class CustomerSocket {
         // If we don't get a response within the timeout, fire an error
         if (timer) {
           clearTimeout(timer)
-        }
-        const wait_time = !event_timeout
-          ? 10
-          : event_timeout
-
-        if (wait_time < 0) {
-          verbose('warning: event_timeout has been disabled!')
-          return
-        } else {
-          verbose(`Event timeout is: ${event_timeout}`)
         }
         if (receive_count >= count) {
           verbose(`Complete. ${receive_count} of ${count} events received.`)
@@ -298,8 +298,6 @@ class CustomerSocket {
         }
         callback(err)
       })
-
-      timer = setTimer()
 
     }, cb)
 
