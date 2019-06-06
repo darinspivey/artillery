@@ -124,7 +124,6 @@ class CustomerSocket {
               ? err.message
               : err
             ee.emit('error', msg)
-            ee.emit('error', err)
             error('Error in flow', err)
             return cb(err, context)
           }
@@ -226,7 +225,6 @@ class CustomerSocket {
         }
         return setTimeout(function responseTimeout() {
           let err = `Time out waiting for response match for: ${sub_name}`
-          ee.emit('error', err)
           _flow_ee.emit(`done:${sub_name}`, err)
         }, wait_time * 1000)
       }
