@@ -169,7 +169,6 @@ class CustomerSocket {
 
     if (wait_time < 0) {
       verbose('warning: event_timeout has been disabled!')
-      return
     } else {
       verbose(`Event timeout is: ${event_timeout}`)
     }
@@ -210,17 +209,12 @@ class CustomerSocket {
       }
 
       let receive_count = 0
-      let timer = null
 
       // Timeout can be disabled by setting timer to -1.  Allows for
       // continuous messages (via message count) to be received
       const setTimer = () => {
         // If we don't get a response within the timeout, fire an error
-        if (timer) {
-          clearTimeout(timer)
-        }
-        if (receive_count >= count) {
-          verbose(`Complete. ${receive_count} of ${count} events received.`)
+        if (wait_time < 0) {
           return
         }
         return setTimeout(function responseTimeout() {
@@ -229,7 +223,7 @@ class CustomerSocket {
         }, wait_time * 1000)
       }
 
-      timer = setTimer()
+      let timer = setTimer()
 
       const subscription = subscription_client.request({
         query
@@ -248,7 +242,7 @@ class CustomerSocket {
           this.processResponse({ee, content, validations, context}, (err) => {
             receive_count++
             if (timer) {
-              timer = setTimer()
+              clearTimeout(timer)
             }
             let code = `${sub_name} (matched)`
 
@@ -260,7 +254,13 @@ class CustomerSocket {
             } else {
               verbose(`Received ${sub_name} payload! (${member_id})`)
               if (receive_count >= count) {
+                verbose(`Complete. ${receive_count} of ${count} expected `
+                  + 'payloads received.'
+                )
                 _flow_ee.emit(`done:${sub_name}`)
+              } else {
+                // We're expecting more.  Reset the timer.
+                timer = setTimer()
               }
             }
             // If we've captured a field to use for latency calculation, use it
